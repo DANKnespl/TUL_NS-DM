@@ -1,0 +1,642 @@
+---
+title: "Zacílení marketingové kampaně"
+output: html_document
+date: "2025-04-16"
+author: "Daniel Knespl"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Knihovny
+## Instalace
+Knihovny využívané při analýze, modelování, evaluaci a nasazení.
+```r
+install.packages("DT")
+install.packages("dplyr")
+install.packages("ggplot2")
+install.packages("plotly")
+install.packages("C50")
+install.packages("stringi")
+install.packages("nnet")
+install.packages("NeuralNetTools")
+install.packages("DBI")
+install.packages("odbc")
+install.packages("ROCR")
+install.packages("png")
+install.packages("grid")
+```
+## Volání
+```{r lib_init, warning=FALSE,message=FALSE}
+library(DT)              # Interaktivní HTML datové matice
+library(dplyr)           # Manipulace s datovou maticí
+library(ggplot2)         # Statické grafy
+library(plotly)          # Interaktivní grafy, generované ze statických
+library(C50)             # C5 modelování
+library(stringi)         # Zpracování textových řetězců (problémy s diakritikou)
+library(caret)           # Analýza výsledků
+library(nnet)            # Neuronové sítě
+library(NeuralNetTools)  # Vizualizace neuronových sítí
+library(DBI)             # Rozhraní pro komunikaci s databázemi
+library(odbc)            # Připojení k databázi skrze ODBC
+library(ROCR)            # Gains charty
+library(png)             # Načítání png
+library(grid)            # Vykreslování png
+
+invisible(Sys.setlocale("LC_ALL", "C.UTF-8"))
+```
+
+# Definice funkcí
+``` {r function_definitions, message=FALSE, warning=FALSE}
+# Vykreslování interaktivních bar plotů
+d_plot <- function(matrix_data, x_param, p_position, p_title, x_desc, y_desc) {
+  # Z matice matrix_data vyber hodnoty atributu x_param
+  # Způsob zobrazení zavisí na zvoleném p_position
+  # p_title je řetězec s titulkem grafu
+  # x_desc a y_desc tak jsou popisky x a y osy
+  p<-ggplot(matrix_data, aes(x = .data[[x_param]], fill = pep)) + 
+  geom_bar(binwidth = 1, position = p_position, alpha = 0.7, color="black",size=0.5) +
+  scale_fill_manual(values = c("ano" = "blue", "ne" = "red")) +  
+  labs(title = p_title,
+       x = x_desc,
+       y = y_desc) +
+  theme_replace()
+ggplotly(p)
+}
+
+# Záměna hodnot ano/ne pro hodnotu pep v dané matici
+swap_pep <- function(matrix){
+  matrix <- matrix %>% mutate(pep = ifelse(pep == "ano", "ne", "ano"))
+  return(matrix)
+}
+
+# Normalizace pro neuronovou síť
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+```
+
+
+
+
+# Business understanding
+
+* Kampaně mají obecně nízkou návratnost
+* Cíl: najít množinu zákazníků, u které bude dosažena vyšší míra zájmu o produkt než pro celou populaci =>snížení nákladů na kampaň, zvýšení zisku firmy
+* Zadání
+  + Banka zavádí nový produkt PEP(Personal equity plan-osobní finanční plán) a hodlá provést marketingovou kampaň
+  + Nejprve zaslala nabídku 600 náhodných klientů a získala údaje o jejich zájmu
+  + Chceme vytvořit model pro předpověď, komu zasílat nabídku produktu
+    + Má zájem/nemá zájem - úloha binární klasifikace
+
+* Modelování
+  + Klasifikační strom C5.0
+  + Neuronová síť
+  + Logistická regrese
+* Evaluace
+  + Gains graf
+  + Tabulka záměn
+* Nasazení 
+  + import a export dat do databáze
+
+# Data understanding
+Proměnná  | Popis
+--------- | -----
+id | Identifikační číslo zákazníka
+vek | Věk zákazníka
+pohlavi | Pohlaví zákazníka
+region | Typ regionu zákazníka
+prijem | Příjem zákazníka za poslední rok
+stav | Rodinný stav zákazníka
+deti | Počet dětí zákazníka
+uver_auto | Indikátor, zda má zákazník úvěr na automobil
+ucet_sporici | Indikátor, zda má zákazník sporici ucet
+ucet_bezny | Indikátor, zda má zákazník bezny ucet
+hypoteka | Indikátor, zda má zákazník hypotéku
+pep | Indikátor, zda má zákazník zájem o nabízený produkt PEP 
+
+!! Pep nabývá hodnoty ano v případě, že zákazník nemá zájem o nabízený produkt PEP
+
+## Načítání dat
+
+```{r understanding-load}
+# načtení dat z lokálního úložiště
+data_matrix <- read.csv(
+  "D:/TUL/DM/semestralka/data_model.txt",
+  header = TRUE, # soubor obsahuje hlavičku
+  sep = ",", # oddělovač hodnot
+  dec = ".", # desetinný oddělovač
+  fileEncoding = "windows-1250",  # kódování textu
+  blank.lines.skip = TRUE # přeskakování prázdných řádků
+)
+
+```
+
+Data jsou v souboru data_model.txt uložena s hlavičkou, hodnoty jsou odděleny &#44; a pro desetinný oddělovač je &#46;. Data obsahují diakritiku a je nutné se jí zbavit. Při testování se mnohokrát stalo, že se soubor přestal načítat. Vždy to šlo opravit restartem RStudia.
+
+```{r understanding-check, warning=FALSE}
+#Vykreslení interaktivní datové matice - tabulka šmírovačka
+datatable(data_matrix, options = list(scrollY = "300px", paging = FALSE,scrollX=TRUE,fixedColumns = list(leftColumns = 1)))
+```
+
+## Analýza dat
+
+
+
+``` {r understanding-pep, warning=FALSE}
+d_plot(data_matrix,"pep","stack", "Histogram závislé proměnné PEP", "PEP", "Počet")
+```
+
+Poměr hodnot “ano” a hodnot “ne” je 45% : 55%, proměnná je tedy vyvážená.
+
+``` {r understanding-children, warning=FALSE}
+d_plot(data_matrix,"deti","stack", "Závislost počtu dětí na zájmu o PEP", "Děti", "Počet")
+
+d_plot(data_matrix,"deti", "fill", "Závislost počtu dětí na zájmu o PEP", "Děti", "Proporce")
+```
+
+Předchozí graf zobrazuje proporcionální zastoupení pep hodnot pro záznamy s různým počtem dětí. Fascinujícím ale je, že modeler ukazuje naprosto totožné hodnoty. To by neměl být tak velký problém, ale v modeleru jsme zaměnili hodnoty “ano” a hodnoty “ne”, proto by dávalo smysl, že grafy nebudou shodné. Ale jak lze vidět na následujícím grafu, jsou totožné.
+
+``` {r understanding-modeler, echo=FALSE}
+img <- readPNG("D:/TUL/DM/semestralka/modeler.PNG")
+grid.newpage()
+grid.raster(img, interpolate = FALSE)
+```
+
+Toto zjištění mě zaskočilo a po chvíli experimentování s modelerem jsem zjistil, že výměna, kterou jsme udělali v modeleru nedělá vůbec nic. Modely i grafy jsou stejné. Proto abych korektně napodobil modeler udělal jsem funkci swap_pep (definována dříve), která prohodí hodnoty “ano” a “ne”, ale v kódu jsem návratovou hodnotu nikde neuložil.
+
+```{r understanding-swap, message=FALSE, warning=FALSE}
+# Záměna hodnot ano/ne atributu pep
+invisible(swap_pep(data_matrix))
+```
+
+```{r distrib-graphs, warning=FALSE}
+
+d_plot(data_matrix,"pohlavi", "fill", "Závislost pohlaví na zájmu o PEP", "Pohlaví", "Počet")
+
+d_plot(data_matrix,"region", "fill", "Závislost regionu na zájmu o PEP", "Region", "Proporce")
+
+
+d_plot(data_matrix,"hypoteka", "fill", "Závislost hypotéky na zájmu o PEP", "Hypotéka", "Proporce")
+
+d_plot(data_matrix,"zenaty", "fill", "Závislost rodinného stavu na zájmu o PEP", "Ženatý", "Proporce")
+
+d_plot(data_matrix,"uver_auto", "fill", "Závislost úvěru na zájmu o PEP", "Úvěr na auto", "Proporce")
+
+d_plot(data_matrix,"ucet_sporici", "fill", "Závislost spořícího účtu na zájmu o PEP", "Spořící účet", "Proporce")
+
+d_plot(data_matrix,"ucet_bezny", "fill", "Závislost běžného účtu na zájmu o PEP", "bezny", "Proporce")
+
+d_plot(data_matrix,"vek", "fill", "Závislost věku na zájmu o PEP", "Věk", "Proporce")
+
+d_plot(data_matrix,"vek", "stack", "Závislost věku na zájmu o PEP", "Věk", "Počet")
+```
+
+Z grafů se zdá, že PEP nemá na většině prediktorů silnou závislost. Výjimkami jsou zde prediktory deti, zenaty, sporici_ucet a region. Prediktor vek se zdá mít jemně rostoucí trend pro PEP = “ano”.
+
+
+``` {r jitter_scatter_plot}
+# Vykreslení Jitter scatter plotu, popisující závislost mezi počtem dětí a příjmy
+p<-ggplot(data_matrix, aes(x = deti, y = prijem, color = pep)) + 
+  geom_jitter(alpha = 0.7, size = 3, width = 0.2, height = 0) +  
+  scale_color_manual(values = c("ano" = "blue", "ne" = "red")) +  
+  labs(title = "Závislost příjmu na počtu dětí podle zájmu o PEP", 
+       x = "Počet dětí", y = "Příjem", color = "Zájem o PEP") +
+  theme_replace()
+ggplotly(p)
+```
+
+Na tomto grafu lze vidět, jak ovlivňuje příjem a počet dětí cílovou proměnou pep. Pokud by se tento graf překryl s grafem popisující proporcionální závislost mezi dětmi a pepem, došlo by k velmi velkému překryvu. Zejména pak při počtu dětí > 0.
+
+
+# Data preparation
+
+Pro testování jsem data rozdělil na trénovací a testovací, podle nové partition proměnné bude později rozdělena hlavní matice na trénovací a testovací matici.
+
+``` {r prep-partition+pnd}
+set.seed(123456)  # Seed pro rozdělení na trénovací a testovací data v poměru 50/50
+
+# Rozdělení na trénovací a testovací data
+data_matrix$partition <- sample(c("train", "test"), nrow(data_matrix), replace = TRUE)
+
+# Výpočet prediktoru prijem_na_dite
+data_matrix$prijem_na_dite <- ifelse(data_matrix$deti == 0, 
+                                     data_matrix$prijem, 
+                                     data_matrix$prijem /
+                                       data_matrix$deti)
+```
+
+Z analýzy vyšlo najevo, že příjem na dítě může být dobrým prediktorem, proto jsem zde takový prediktor vytvořil. Pro kontrolu je zde zobrazení histogramu hodnot pouze pro případy, kdy má záznam alespoň jedno dítě.
+
+```{r prep-pnd-histogram, warning=FALSE}
+# Odfiltrování záznamů bez dětí
+filtered_data <- subset(data_matrix, deti>0)
+
+# Vykreslení histogramu příjmu na dítě
+p <- ggplot(filtered_data, aes(x = prijem_na_dite, fill = pep)) + 
+  geom_histogram(binwidth = 2000, color = "black", alpha = 0.7) +
+  scale_fill_manual(values = c("ano" = "blue", "ne" = "red")) +
+  labs(title = "Histogram příjmu na dítě", 
+       x = "Příjem na dítě", 
+       y = "Počet") +
+  theme_replace()
+ggplotly(p)
+```
+
+V grafu se pěkně ukazuje že od příjmu na dítě +- 16000 je velice pravděpodobné, že záznam má zájem o PEP.
+
+Trénované modely nefungují dobře s diakritikou, došlo tedy k očištění.
+
+```{r prep-predictor_matrix-table, warning=FALSE}
+# Očištění dat od diakritiky a od parametru id (není prediktorem)
+data_matrix <- data_matrix %>%
+  mutate(across(where(is.character), ~stri_trans_general(., "latin-ascii"))) %>%
+  select(-id) %>%  # Remove 'id' & derived columns
+  mutate(across(where(is.character), as.factor)) 
+
+# Vykreslení datové matice, na které budou trénovány a testovány modely
+datatable(data_matrix, options = list(scrollY = "300px", paging = FALSE,scrollX=TRUE,fixedColumns = list(leftColumns = 1)))
+```
+
+Posledním krokem v přípravě dat je rozdělení této matice na testovací a trénovací, tentokrát již bez proměnné partition.
+
+``` {r prep-partition-predictor_matrix}
+# Rozdělení hlavní matice na trénovací a testovací submatice
+training_matrix <- subset(data_matrix, partition == "train") %>% select(-partition)
+test_matrix <- subset(data_matrix, partition == "test") %>% select(-partition)
+```
+
+
+# Modeling
+
+V rámci modelování jsem vytvořil čtyři modely
+
+* C5 Děti + Příjem
+* C5 Děti + Příjem + Přijem na dítě
+* Logistická regrese
+* Neuronová síť
+
+## C5 Děti + Příjem
+
+První model využívá rozhodovacího C5 stromu, bez využití prediktoru prijem_na_dite.
+
+``` {r model-c5c }
+#Příprava matic pro C5
+C5_training_matrix <- test_matrix
+C5_test_matrix <- test_matrix
+
+# Definice prediktorů
+predictors <- C5_training_matrix %>% select(-pep, -prijem_na_dite)
+test_predictors <- C5_test_matrix %>% select(-pep,-prijem_na_dite)
+
+# Trénování modelu
+c5_children_model <- C5.0(x = predictors, y = C5_training_matrix$pep)
+
+
+
+# TESTOVÁNÍ
+test_predictions <- predict(c5_children_model, test_predictors)
+
+# Příprava na porovnání výsledků (nastavení shodných úrovní predikce a hledané proměnné)
+C5_test_matrix$pep <- factor(C5_test_matrix$pep, levels = c("ano", "ne"))
+test_predictions <- factor(test_predictions, levels = c("ano", "ne"))
+
+
+# PŘÍPRAVA PRO EVALUACI
+
+# Výpočet matice záměn
+c5c_conf_matrix <- confusionMatrix(test_predictions, C5_test_matrix$pep)
+
+# Hodnoty pro tvorbu gains 
+prob_c5c <- predict(c5_children_model, C5_test_matrix, type = "prob")[,"ano"]
+```
+
+
+## C5 Děti + Příjem + Příjem na děti
+
+Druhý model také využívá rozhodovacího C5 stromu, ale tentokrát využívá prijem_na_dite.
+
+``` {r model-c5m }
+#Příprava matic pro C5
+C5_training_matrix <- test_matrix
+C5_test_matrix <- test_matrix
+
+# Definice prediktorů
+predictors <- C5_training_matrix %>% select(-pep)
+test_predictors <- C5_test_matrix %>% select(-pep)
+
+# Trénování modelu
+c5_model <- C5.0(x = predictors, y = C5_training_matrix$pep)
+
+
+
+# TESTOVÁNÍ
+test_predictions <- predict(c5_model, test_predictors)
+
+# Příprava na porovnání výsledků (nastavení shodných úrovní predikce a hledané proměnné)
+C5_test_matrix$pep <- factor(C5_test_matrix$pep, levels = c("ano", "ne"))
+test_predictions <- factor(test_predictions, levels = c("ano", "ne"))
+
+
+
+# PŘÍPRAVA PRO EVALUACI
+
+# Výpočet matice záměn
+c5m_conf_matrix <- confusionMatrix(test_predictions, C5_test_matrix$pep)
+
+# Hodnoty pro tvorbu gains 
+prob_c5m <- predict(c5_model, C5_test_matrix, type = "prob")[, "ano"]
+```
+
+
+
+
+## Logistická regrese
+
+Třetí model využívá logistické regrese pro předpověď, kdy je hodnota pep rovná “ne”.
+
+
+``` {r model-lr }
+lr_min_confidence <- 0.49
+
+
+#Příprava matic pro logistickou regresi
+lr_training_matrix <- training_matrix
+lr_test_matrix <- test_matrix
+
+# Definice prediktorů
+test_predictors <- lr_test_matrix %>% select(-pep)
+
+# Trénování modelu
+logistic <-glm(pep ~ . ,family="binomial", data = lr_training_matrix)
+#pep ~ . - predikuj pep na základě všech proměnných
+#family="binomial" - typ glm(zobecněný/obecný lineární model), kdy výsledek má být kategorizován do dvou úrovní
+
+
+
+# TESTOVÁNÍ
+# "response" zde vrací procentuální konfidenci, že výsledek je "ne"
+test_probabilities <- predict(logistic, test_predictors, type = "response")
+
+# Určení hodnoty predikce
+lr_predictions <- ifelse(test_probabilities > lr_min_confidence, "ne", "ano")
+# Pokud je pravděpodobnost větší než 58%, je výsledkem predikce ne, jinak ano.
+
+# Příprava na porovnání výsledků (nastavení shodných úrovní predikce a hledané proměnné)
+lr_predictions <- factor(lr_predictions, levels = c("ano", "ne"))
+lr_test_matrix$pep <- factor(lr_test_matrix$pep, levels = c("ano", "ne"))
+
+
+
+# PŘÍPRAVA PRO EVALUACI
+
+# Tvorba matice záměn
+lr_conf_matrix <- confusionMatrix(lr_test_matrix$pep,lr_predictions)
+
+# Hodnoty pro tvorbu gains
+prob_lr <- predict(logistic, lr_test_matrix, type = "response")
+
+# Hodnoty pro tvorbu histogramu
+lr_results <- lr_test_matrix
+lr_results$predicted_prob <- test_probabilities
+lr_results$predicted_class <- lr_predictions
+```
+
+
+
+## Neuronová síť
+
+Čtvrtý a poslední model využívá neuronové sítě.
+
+``` {r model-n, message=FALSE, warning=FALSE}
+# Příprava matic pro neuronovou síť
+n_training_matrix <- training_matrix %>% select(-prijem)
+n_test_matrix <- test_matrix %>% select(-prijem)
+
+# Příprava proměnných pro neuronovou síť
+factor_vars <- c("pep","zenaty", "uver_auto", "ucet_sporici", "ucet_bezny", "hypoteka", "pohlavi","region","deti")
+for (var in factor_vars) {
+  n_training_matrix[[var]] <- as.numeric(n_training_matrix[[var]]) - 1
+  n_test_matrix[[var]] <- as.numeric(n_test_matrix[[var]]) -1
+}
+
+# Normalizace hodnot
+n_training_matrix$vek <- normalize(n_training_matrix$vek)
+n_training_matrix$prijem_na_dite <- normalize(n_training_matrix$prijem_na_dite)
+
+n_test_matrix$vek <- normalize(n_test_matrix$vek)
+n_test_matrix$prijem_na_dite <- normalize(n_test_matrix$prijem_na_dite)
+
+
+
+neurn <- nnet(pep ~ ., n_training_matrix, size = 7, decay = 0.1, maxit = 500)
+
+# TESTOVÁNÍ
+# "raw" zde vrací procentuální konfidenci, že výsledek je "ano"
+n_predictions <- predict(neurn, n_test_matrix, type = "raw")
+
+# Příprava na porovnání výsledků (nastavení shodných úrovní predikce a hledané proměnné)
+n_test_matrix$pep <- ifelse(n_test_matrix$pep==1, "ano", "ne")
+n_test_matrix$pep <- factor(n_test_matrix$pep, levels = c("ano", "ne"))
+n_predictions <- ifelse(n_predictions > 0.5, "ano", "ne")
+n_predictions <- factor(n_predictions, levels = c("ano", "ne"))
+
+
+# PŘÍPRAVA PRO EVALUACI
+
+# Tvorba matice záměn
+n_conf_matrix <- confusionMatrix(n_test_matrix$pep,n_predictions)
+
+# Hodnoty pro tvorbu gains
+prob_n <- predict(neurn, n_test_matrix, type = "raw")
+
+```
+# Evaluation
+
+## C5 Děti + Příjem
+``` {r eval-c5c}
+print(c5c_conf_matrix) # Matice záměn
+plot(c5_children_model) # Dendrogram
+varImp(c5_children_model) # Významnost prediktorů
+```
+
+První model dosahuje úspěšnosti 91.69%. Prediktory prijem, deti, zenaty, ucet_sporici a hypoteka se ukázaly jako důležité. Na některé tyto prediktory jsem v části analýzy upozorňoval. Jiné se však ukázaly jako nedůležité - vek, region.
+
+
+## C5 Děti + Příjem + Příjem na dítě
+``` {r eval-c5m}
+print(c5m_conf_matrix) # Matice záměn
+plot(c5_model) # Dendrogram
+varImp(c5_model) # Významnost prediktorů
+```
+
+Druhý model dosahuje úspěšnosti 93.69%. Narozdíl od prvního modelu, je využito více prediktorů - například region, na který jsem upozorňoval v analýze, ale v prvním modelu nebyl vůbec využit.
+
+Je důležité zmínit, že kvalita modelů je silně spojena s daty na kterých byly trénovány. Pro jiný seed náhodnosti rozdělení dat, vycházel tento model horší než původní. Dendrogram byl mnohem jednodušší, ale přesnost byla kolem 89%.
+
+## Logistická regrese
+``` {r eval-lr}
+print(lr_conf_matrix) # Matice záměn
+summary(logistic) # Nastavení modelu
+varImp(logistic) # Významnost prediktorů
+
+#histogram pravděpodobností
+p <- ggplot(lr_results, aes(x = predicted_prob, fill = pep)) +
+  geom_histogram(binwidth = 0.02, position = "identity", alpha = 0.6, color = "black") +
+  scale_fill_manual(values = c("ano" = "red", "ne" = "blue")) +
+  geom_vline(xintercept = lr_min_confidence, linetype = "dashed", color = "red") +
+  labs(
+    title = "Distribuce predikovaných pravděpodobností",
+    x = "Predikovaná pravděpodobnost (pep = 'ne')",
+    y = "Počet",
+    fill = "Skutečná hodnota"
+  ) +
+  theme_replace()
+ggplotly(p)
+```
+
+Logistická regrese dopadla ze všech modelů nejhůře - přesnost 61.13% (při minimální konfidenci 0.58) ne příliš lepší než náhodný výběr. Logistická regrese byla nejvíce volatilní s různými seedy. Na seedu “420301” s nastavením minimální konfidence na 0.53, dosahovala přesnosti 66.46%.
+
+## Neuronová síť
+``` {r eval-n}
+print(n_conf_matrix) # Matice záměn
+plotnet(neurn) # Neuronová síť
+varImp(neurn) # Významnost prediktorů
+```
+
+Neuronová síť dopadla dobře - přesnost 83.39%. Po poměrně dlouhé době hraní si s parametry a různými knihovnami, dopadla nejlépe aktuální neuronová síť.
+
+## Gains
+``` {r eval-gains}
+true_labels <- test_matrix$pep
+
+
+# Model 0: C5 Děti + Příjem
+prob_c5c <- 1 - prob_c5c
+pred_c5c <- prediction(prob_c5c, true_labels)
+gain_c5c <- performance(pred_c5c, "tpr", "rpp")
+
+# Model 1: C5 Děti + Příjem + Příjem na dítě
+prob_c5m <- 1 - prob_c5m
+pred_c5m <- prediction(prob_c5m, true_labels)
+gain_c5m <- performance(pred_c5m, "tpr", "rpp")
+
+# Model 2: Logistická regrese
+prob_lr <- prob_lr
+pred_lr <- prediction(prob_lr, true_labels)
+gain_lr <- performance(pred_lr, "tpr", "rpp")
+
+# Model 3: Neurální síť
+pred_n <- prediction(prob_n, true_labels)
+gain_n <- performance(pred_n, "tpr", "rpp")
+
+
+# Příprava dat pro plotly
+data_c5m <- data.frame(cumulative_percent = gain_c5m@x.values[[1]], cumulative_gain = gain_c5m@y.values[[1]], model = "C5 Příjem na děti")
+data_c5c <- data.frame(cumulative_percent = gain_c5c@x.values[[1]], cumulative_gain = gain_c5c@y.values[[1]], model = "C5 Děti + Příjem")
+data_lr <- data.frame(cumulative_percent = gain_lr@x.values[[1]], cumulative_gain = gain_lr@y.values[[1]], model = "Logistická regrese")
+data_n <- data.frame(cumulative_percent = gain_n@x.values[[1]], cumulative_gain = gain_n@y.values[[1]], model = "Neurální síť")
+
+# vytvoření jedné datové matice se všemi daty
+gains_df <- rbind(data_c5c, data_c5m, data_lr, data_n)
+
+# Vykreslení grafu 
+plot_ly(data = gains_df, x = ~cumulative_percent, y = ~cumulative_gain, color = ~model, type = 'scatter', mode = 'lines', 
+        line = list(width = 2)) %>%
+  layout(title = "Gain Modelů",
+         xaxis = list(title = "Percentil"),
+         yaxis = list(title = "% Gain"),
+         showlegend = TRUE)
+```
+
+
+
+
+
+# Deployment
+Pro deployment byl zvolen model C5, kvůli jeho kvalitním výsledkům při testování. Přesněji se jedná o verzi s příjmem na dítě.
+Data na kterých byl model využit jsou v databázi "modeler" na serveru 147.230.21.38 v tabulce "Data".
+
+Tato tabulka má následující strukturu:
+
+Proměnná  | Předpokládaná proměnná
+----- | ---
+id | id
+vek | vek
+pohlavi | pohlavi
+region | region
+prijem | prijem
+stav | zenaty
+deti | deti
+uver_auto | uver_auto
+ucet_sporici | ucet_sporici
+uset_beznyt | ucet_bezny
+hypoteka | hypoteka
+
+Pro prediktory je tedy nutné některé proměnné přejmenovat a dopočítat hodnoty "prijem_na_dite".
+Výsledky predikcí byly přidány k původním datům a zapsány do tabulky DM_24_KNESPL_SKORE2.
+
+V následujícím kódu je připojení se k databázi, načtení dat z databáze a příprava dat pro aplikaci modelu.
+
+
+``` {r deployment-load}
+used_model <- c5_model #model, který bude použit pro predikci nad daty z DB
+
+# Připojení k DB
+con <- dbConnect(odbc(), 
+                 Driver   = "ODBC Driver 17 for SQL Server", #ODBC driver, který se má použít pro připojení k serveru
+                 Server   = "147.230.21.38",
+                 Database = "modeler",
+                 UID      = "student",
+                 PWD      = "student",
+                 Port     = 1433) # Defaultní SQL Server TCP port
+
+#Načtení tabulky z databáze
+df <- dbReadTable(con, "Data") 
+
+# Očištění dat od diakritiky a od parametru id (není prediktorem)
+data_predictors <- df %>%
+  mutate(across(where(is.character), ~stri_trans_general(., "latin-ascii"))) %>%
+  select(-id) %>% 
+  mutate(across(where(is.character), as.factor)) 
+
+
+# Přejmenování prediktorů tak, aby na data fungoval můj model
+names(data_predictors)[names(data_predictors) == "stav"] <- "zenaty"
+names(data_predictors)[names(data_predictors) == "uset_beznyt"] <- "ucet_bezny"
+
+# Dopočítání prijem_na_dite prediktoru
+data_predictors$prijem_na_dite <- ifelse(data_predictors$deti == 0, 
+                                     data_predictors$prijem, 
+                                     data_predictors$prijem /
+                                       df$deti)
+```
+
+Zde je vidět využití modelu, příprava dat pro zápis do databáze, vlastní zápis do databáze a ukončení komunikace s databází.
+
+``` {r deployment-deploy}
+# Udělání predikcí 
+df$prediction <- predict(used_model, data_predictors)
+probability <- predict(used_model, data_predictors, type = "prob")
+
+# Nastavení úrovní predikce
+invisible(factor(df$prediction, levels = c("ano", "ne")))
+
+# Připojení pravděpodobností do tabulky
+df <- cbind(df, probability)
+
+# Přejmenování sloupců s pravděpodobnostmi
+names(df)[names(df) == "ano"] <- "probability-ano"
+names(df)[names(df) == "ne"] <- "probability-ne"
+
+# Zápis do tabulky
+  # con - jaká databáze
+  # "DM_24_KNESPL_SKORE2" - jaká tabulka
+  # df - co ukládám
+  # overwrite = TRUE - přepisování povoleno
+  # row.names = FALSE - zamezení uložení hlavičky jako záznamu
+dbWriteTable(con, "DM_24_KNESPL_SKORE2", df, overwrite = TRUE, row.names = FALSE)
+dbDisconnect(con) # Odpojení se z DB
+```
+
