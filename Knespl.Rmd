@@ -43,7 +43,6 @@ library(odbc)            # Připojení k databázi skrze ODBC
 library(ROCR)            # Gains charty
 library(png)             # Načítání png
 library(grid)            # Vykreslování png
-
 invisible(Sys.setlocale("LC_ALL", "C.UTF-8"))
 ```
 
@@ -123,7 +122,7 @@ pep | Indikátor, zda má zákazník zájem o nabízený produkt PEP
 ```{r understanding-load}
 # načtení dat z lokálního úložiště
 data_matrix <- read.csv(
-  "D:/TUL/DM/semestralka/data_model.txt",
+  "./data_model.txt",
   header = TRUE, # soubor obsahuje hlavičku
   sep = ",", # oddělovač hodnot
   dec = ".", # desetinný oddělovač
@@ -159,7 +158,7 @@ d_plot(data_matrix,"deti", "fill", "Závislost počtu dětí na zájmu o PEP", "
 Předchozí graf zobrazuje proporcionální zastoupení pep hodnot pro záznamy s různým počtem dětí. Fascinujícím ale je, že modeler ukazuje naprosto totožné hodnoty. To by neměl být tak velký problém, ale v modeleru jsme zaměnili hodnoty “ano” a hodnoty “ne”, proto by dávalo smysl, že grafy nebudou shodné. Ale jak lze vidět na následujícím grafu, jsou totožné.
 
 ``` {r understanding-modeler, echo=FALSE}
-img <- readPNG("D:/TUL/DM/semestralka/modeler.PNG")
+img <- readPNG("./modeler.PNG")
 grid.newpage()
 grid.raster(img, interpolate = FALSE)
 ```
